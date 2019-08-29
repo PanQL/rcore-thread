@@ -55,11 +55,35 @@ impl StaticSchedulerInner {
         assert!(!self.infos[current].present);
 
         let rest = &mut self.infos[current].rest_slice;
-        if *rest > 0{
+        let ret = if *rest > 0{
             *rest -= 1;
+            false
         } else {
             self.push(current - 1, 10); // FIXME how much should the default-time be
-        }
-        *rest == 0
+            true
+        };
+        ret
     }
+}
+
+impl StaticScheduler {
+    pub fn new(time_slice : usize) -> Self{
+        let inner = StaticSchedulerInner::new(time_slice);
+        StaticScheduler {
+            inner : Mutex::new(inner),
+        }
+    }
+}
+
+impl Scheduler for StaticScheduler {
+    fn push(&self, tid: usize) {
+        self.inner.lock().push(tid, 10);
+    }
+    fn pop(&self, _cpu_id: usize) -> Option<usize> {
+        self.inner.lock().pop()
+    }
+    fn tick(&self, current_tid: usize) -> bool {
+        self.inner.lock().tick(current_tid)
+    }
+    fn set_priority(&self, _tid: usize, _priority: u8) {}
 }
