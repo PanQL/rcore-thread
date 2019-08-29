@@ -7,11 +7,13 @@ pub use self::o1::O1Scheduler;
 pub use self::rr::RRScheduler;
 pub use self::stride::StrideScheduler;
 pub use self::work_stealing::WorkStealingScheduler;
+pub use self::ss::StaticScheduler;
 
 mod o1;
 mod rr;
 mod stride;
 mod work_stealing;
+mod ss;
 
 type Tid = usize;
 
