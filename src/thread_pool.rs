@@ -1,5 +1,6 @@
 use crate::scheduler::Scheduler;
 use crate::timer::Timer;
+use crate::tt_scheduler::{TTScheduler, NaiveTTScheduler};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use log::*;
@@ -16,6 +17,15 @@ struct Thread {
     detached: bool,
     /// The context of the thread.
     context: Option<Box<Context>>,
+    /// Whether this thread is TT_thread
+    is_TT_thread : bool,
+    /// Next three alam are useful only when this is a TT_thread
+    /// Cycle for this thread
+    cycle : usize,
+    /// every begin-time is cycle*n + offset
+    offset : usize,
+    /// max_exec_time
+    max_exec_time : usize,
 }
 
 pub type Tid = usize;
@@ -48,6 +58,7 @@ pub struct ThreadPool {
     threads: Vec<Mutex<Option<Thread>>>,
     scheduler: Box<Scheduler>,
     timer: Mutex<Timer<Event>>,
+    tt_threads: Box<TTScheduler>,
 }
 
 impl ThreadPool {
@@ -56,6 +67,7 @@ impl ThreadPool {
             threads: new_vec_default(max_proc_num),
             scheduler: Box::new(scheduler),
             timer: Mutex::new(Timer::new()),
+            tt_threads: Box::new(NaiveTTScheduler::new(100)),
         }
     }
 
@@ -80,15 +92,42 @@ impl ThreadPool {
             waiter: None,
             detached: false,
             context: Some(context),
+            is_TT_thread : false,
+            cycle : 0,
+            offset : 0,
+            max_exec_time : 0,
         });
         self.scheduler.push(tid);
         tid
+    }
+
+    /// Add a new TT_thread
+    /// Calls action with tid and thread context
+    pub fn tt_add(&self, mut context: Box<Context>, cycle : usize, offset : usize, max_exec_time : usize) -> Option<Tid> {
+        let (tid, mut thread) = self.alloc_tid();
+        context.set_tid(tid);
+        *thread = Some(Thread {
+            status: Status::Ready,
+            status_after_stop: Status::Ready,
+            waiter: None,
+            detached: false,
+            context: Some(context),
+            is_TT_thread : true,
+            cycle,
+            offset,
+            max_exec_time,
+        });
+        self.scheduler.push(tid);
+        // TODO 添加新的TT线程是可能因为时间冲突而失败的，这里需要一个判断条件
+        Some(tid)
     }
 
     /// Make thread `tid` time slice -= 1.
     /// Return true if time slice == 0.
     /// Called by timer interrupt handler.
     pub(crate) fn tick(&self, cpu_id: usize, tid: Option<Tid>) -> bool {
+        // TODO
+        // 这里需要根据传入的time来判断当前是否需要从普通线程切换到TT线程，或者强行切掉当前的TT线程
         if cpu_id == 0 {
             let mut timer = self.timer.lock();
             timer.tick();

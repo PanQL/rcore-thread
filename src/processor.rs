@@ -66,8 +66,7 @@ impl Processor {
         }
         loop {
             if let Some(thread) = inner.manager.run(inner.id) {
-                // trace!("CPU{} begin running thread {}", inner.id, thread.0);
-                //info!("CPU{} begin running thread {}", inner.id, thread.0);
+                trace!("CPU{} begin running thread {}", inner.id, thread.0);
                 inner.thread = Some(thread);
                 unsafe {
                     inner
@@ -75,12 +74,10 @@ impl Processor {
                         .switch_to(&mut *inner.thread.as_mut().unwrap().1);
                 }
                 let (tid, context) = inner.thread.take().unwrap();
-                // trace!("CPU{} stop running thread {}", inner.id, tid);
-                //info!("CPU{} stop running thread {}", inner.id, tid);
+                trace!("CPU{} stop running thread {}", inner.id, tid);
                 inner.manager.stop(tid, context);
             } else {
-                //trace!("CPU{} idle", inner.id);
-                info!("CPU{} idle", inner.id);
+                trace!("CPU{} idle", inner.id);
                 unsafe {
                     interrupt::enable_and_wfi();
                 }
@@ -143,9 +140,7 @@ impl Processor {
         // Will go back to `run()` after interrupt return.
         let tid = self.inner().thread.as_ref().map(|p| p.0);
         let need_reschedule = self.manager().tick(self.inner().id, tid);
-        warn!("not need schedule");
         if need_reschedule {
-            warn!("need schedule");
             self.yield_now();
         }
     }

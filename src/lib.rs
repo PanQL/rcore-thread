@@ -13,6 +13,7 @@ pub mod scheduler;
 pub mod std_thread;
 mod thread_pool;
 mod timer;
+mod tt_scheduler;
 
 #[cfg(target_arch = "x86_64")]
 #[path = "./context/x86_64.rs"]
