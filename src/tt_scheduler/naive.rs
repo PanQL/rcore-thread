@@ -74,8 +74,14 @@ impl TTScheduler for NaiveTTScheduler {
     fn pop(&self) -> Option<Tid> {
         self.inner.lock().pop()
     }
-    fn tick(&self, current_tid : Tid) -> bool {
-        self.inner.lock().tick(current_tid)
+    fn tick(&self) -> bool {
+        self.inner.lock().tick()
+    }
+    fn working(&self) -> bool {
+        self.inner.lock().working()
+    }
+    fn stop(&self) {
+        self.inner.lock().stop()
     }
 }
 
@@ -83,6 +89,11 @@ impl NaiveTTSchedulerInner{
     fn push(&mut self, tid : Tid, cycle : usize, offset : usize, max_time : usize) -> bool {
         let new_info = NaiveTTInfo::new(tid, cycle, offset, max_time);
         let mut ret = true;
+        error!("cycle {:#x}, offset {:#x}, max_time {:#x}", cycle, offset, max_time);
+        if (max_time + offset) > cycle {
+            ret = false;
+            return ret;
+        }
         for info in self.infos.iter() {
             if info.check_conflict(&new_info) {
                 ret = false;
@@ -90,7 +101,9 @@ impl NaiveTTSchedulerInner{
             }
         }
         if ret {
-            let new_time = self.time + (new_info.cycle - self.time % new_info.cycle) + new_info.offset;
+            error!("cycle {:#x}, offset {:#x}", new_info.cycle, new_info.offset);
+            let new_time = self.time + (new_info.cycle - ( self.time % new_info.cycle )) + new_info.offset;
+            error!("current time {:#x} new time {:#x}", self.time, new_time);
             // 更新保存着TT线程开始时间的堆
             let index = self.infos.len();
             self.time_table.push((Reverse(new_time), index));
@@ -100,34 +113,54 @@ impl NaiveTTSchedulerInner{
     }
 
     fn pop(&mut self) -> Option<Tid> {
-        let mut ret = None;
-        if let Some((Reverse(start_time), index)) = self.time_table.pop() {
+        let mut judge = false;  // 判断当前是否有新的TT线程需要执行
+        if let Some((Reverse(start_time), _)) = self.time_table.peek() {
+            judge = *start_time == self.time;
+        }
+        if judge {  // 有新的TT线程需要执行
+            let (Reverse(start_time), index) = self.time_table.pop().unwrap();
             assert_eq!(start_time, self.time);
             let cycle = self.infos[index].cycle;
+            error!("cycle is {:#x}", cycle);
             let tid = self.infos[index].tid;
             let new_time_slice = self.infos[index].max_time;
             self.current = tid;
             self.time_slice = new_time_slice;
             self.time_table.push((Reverse(start_time + cycle), index));
-            ret = Some(tid);
+            Some(tid)
+        }else{  // 没有新的TT线程需要执行
+            None
         }
-        ret
     }
 
-    fn tick(&mut self, _tid : Tid) -> bool {
+    fn tick(&mut self) -> bool {
         let mut ret = false;
         self.tick_counter += 1;
         if self.tick_counter == self.ticks_per_msec {
             self.tick_counter = 0;
             self.time += 1;
-            if self.time_slice == 0 {
+            error!("current time {:#x} time_slice {:#x} is_empty : {}", self.time, self.time_slice, self.time_table.is_empty());
+            if self.time_slice == 0 {   // 当前没有TT线程正在运行中
+                // 查看time变化之后是否有新的需要执行的TT线程
                 if let Some((Reverse(start_time), _)) = self.time_table.peek() {
+                    error!("next tt_time {:#x}", *start_time);
                     ret = *start_time == self.time;
                 }
-            }else{
+            }else{  // 某一TT线程正在运行，将其运行ms数减1
                 self.time_slice -= 1;
             }
         }
+        if ret {
+            error!("tt tick ret is true");
+        }
         ret
+    }
+
+    fn working(&self) -> bool {
+        self.time_slice > 0
+    }
+
+    fn stop(&mut self) {
+        self.time_slice = 0
     }
 }

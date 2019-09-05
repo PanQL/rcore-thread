@@ -18,14 +18,7 @@ struct Thread {
     /// The context of the thread.
     context: Option<Box<Context>>,
     /// Whether this thread is TT_thread
-    is_TT_thread : bool,
-    /// Next three alam are useful only when this is a TT_thread
-    /// Cycle for this thread
-    cycle : usize,
-    /// every begin-time is cycle*n + offset
-    offset : usize,
-    /// max_exec_time
-    max_exec_time : usize,
+    is_tt_thread : bool,
 }
 
 pub type Tid = usize;
@@ -92,10 +85,7 @@ impl ThreadPool {
             waiter: None,
             detached: false,
             context: Some(context),
-            is_TT_thread : false,
-            cycle : 0,
-            offset : 0,
-            max_exec_time : 0,
+            is_tt_thread : false,
         });
         self.scheduler.push(tid);
         tid
@@ -105,41 +95,46 @@ impl ThreadPool {
     /// Calls action with tid and thread context
     pub fn tt_add(&self, mut context: Box<Context>, cycle : usize, offset : usize, max_exec_time : usize) -> Option<Tid> {
         let (tid, mut thread) = self.alloc_tid();
-        context.set_tid(tid);
-        *thread = Some(Thread {
-            status: Status::Ready,
-            status_after_stop: Status::Ready,
-            waiter: None,
-            detached: false,
-            context: Some(context),
-            is_TT_thread : true,
-            cycle,
-            offset,
-            max_exec_time,
-        });
-        self.scheduler.push(tid);
-        // TODO 添加新的TT线程是可能因为时间冲突而失败的，这里需要一个判断条件
-        Some(tid)
+        // 添加新的TT线程是可能因为时间冲突而失败的，这里需要一个判断条件
+        if self.tt_threads.push(tid, cycle, offset, max_exec_time) {
+            context.set_tid(tid);
+            *thread = Some(Thread {
+                status: Status::Ready,
+                status_after_stop: Status::Ready,
+                waiter: None,
+                detached: false,
+                context: Some(context),
+                is_tt_thread : true,
+            });
+            Some(tid)
+        }else{
+            None
+        }
     }
 
     /// Make thread `tid` time slice -= 1.
     /// Return true if time slice == 0.
     /// Called by timer interrupt handler.
     pub(crate) fn tick(&self, cpu_id: usize, tid: Option<Tid>) -> bool {
-        // TODO
         // 这里需要根据传入的time来判断当前是否需要从普通线程切换到TT线程，或者强行切掉当前的TT线程
-        if cpu_id == 0 {
-            let mut timer = self.timer.lock();
-            timer.tick();
-            while let Some(event) = timer.pop() {
-                match event {
-                    Event::Wakeup(tid) => self.set_status(tid, Status::Ready),
+        if self.tt_threads.tick() { // TT线程需要调度：当前执行的TT线程需要被切断/新的TT线程需要开始执行
+            true
+        }else if self.tt_threads.working() {   // 有TT线程正在执行，这时忽略普通线程
+            false
+        }else{
+            if cpu_id == 0 {
+                let mut timer = self.timer.lock();
+                timer.tick();
+                while let Some(event) = timer.pop() {
+                    match event {
+                        Event::Wakeup(tid) => self.set_status(tid, Status::Ready),
+                    }
                 }
             }
-        }
-        match tid {
-            Some(tid) => self.scheduler.tick(tid),
-            None => false,
+            match tid {
+                Some(tid) => self.scheduler.tick(tid),
+                None => false,
+            }
         }
     }
 
@@ -152,6 +147,11 @@ impl ThreadPool {
     /// The manager first mark it `Running`,
     /// then take out and return its Context.
     pub(crate) fn run(&self, cpu_id: usize) -> Option<(Tid, Box<Context>)> {
+        if let Some(tid) = self.tt_threads.pop() {
+            let mut proc_lock = self.threads[tid].lock();
+            let proc = proc_lock.as_mut().expect("thread not exist");
+            return Some((tid, proc.context.take().expect("context not exist")));
+        }
         self.scheduler.pop(cpu_id).map(|tid| {
             let mut proc_lock = self.threads[tid].lock();
             let mut proc = proc_lock.as_mut().expect("thread not exist");
@@ -165,13 +165,20 @@ impl ThreadPool {
     pub(crate) fn stop(&self, tid: Tid, context: Box<Context>) {
         let mut proc_lock = self.threads[tid].lock();
         let proc = proc_lock.as_mut().expect("thread not exist");
-        proc.status = proc.status_after_stop.clone();
-        proc.status_after_stop = Status::Ready;
-        proc.context = Some(context);
-        match proc.status {
-            Status::Ready => self.scheduler.push(tid),
-            Status::Exited(_) => self.exit_handler(proc_lock),
-            _ => {}
+        let is_tt = proc.is_tt_thread;
+        if is_tt {
+            // TODO 
+            proc.context = Some(context);
+            self.tt_threads.stop()
+        }else{
+            proc.status = proc.status_after_stop.clone();
+            proc.status_after_stop = Status::Ready;
+            proc.context = Some(context);
+            match proc.status {
+                Status::Ready => self.scheduler.push(tid),
+                Status::Exited(_) => self.exit_handler(proc_lock),
+                _ => {}
+            }
         }
     }
 
@@ -264,6 +271,7 @@ impl ThreadPool {
     }
 
     pub fn exit(&self, tid: Tid, code: ExitCode) {
+        // TODO 当结束运行的线程为TT线程时的情况
         // NOTE: if `tid` is running, status change will be deferred.
         self.set_status(tid, Status::Exited(code));
     }
